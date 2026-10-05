@@ -1,0 +1,34 @@
+# Python virtual environments and interpreter caches
+.venv/
+venv/
+env/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Test, type-check, coverage, and build-tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local user state (contains the last NameList path, user name, and serials)
+config/settings.json
+config/*.tmp
+
+# PaddleOCR/PaddleX downloads.  They are recreated on the first analysis.
+runtime/
+
+# PyInstaller output: intermediate files and the distributable EXE folder
+build/
+dist/
+
+# Editor and operating-system metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

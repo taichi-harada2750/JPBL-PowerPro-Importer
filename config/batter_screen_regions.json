@@ -1,0 +1,26 @@
+{
+  "description": "2026-08-21提供の1920x1080野手記録画面で校正済み。画面に犠飛列がないため、GameJSON v1の既定値0を適用する。",
+  "columns": {
+    "name": { "x": 203, "y": 0, "width": 230, "height": 56 },
+    "at_bats": { "x": 438, "y": 0, "width": 88, "height": 56 },
+    "runs": { "x": 533, "y": 0, "width": 89, "height": 56 },
+    "hits": { "x": 629, "y": 0, "width": 89, "height": 56 },
+    "doubles": { "x": 725, "y": 0, "width": 89, "height": 56 },
+    "triples": { "x": 821, "y": 0, "width": 89, "height": 56 },
+    "home_runs": { "x": 917, "y": 0, "width": 89, "height": 56 },
+    "rbi": { "x": 1013, "y": 0, "width": 89, "height": 56 },
+    "strikeouts": { "x": 1109, "y": 0, "width": 89, "height": 56 },
+    "walks_hbp": { "x": 1205, "y": 0, "width": 89, "height": 56 },
+    "sacrifices": { "x": 1301, "y": 0, "width": 89, "height": 56 },
+    "steals": { "x": 1397, "y": 0, "width": 89, "height": 56 },
+    "double_plays": { "x": 1493, "y": 0, "width": 89, "height": 56 },
+    "errors": { "x": 1589, "y": 0, "width": 89, "height": 56 }
+  },
+  "rows": {
+    "firstRowY": 300,
+    "rowHeight": 56,
+    "rowStride": 64,
+    "maxRows": 9,
+    "rowInkThreshold": 0.012
+  }
+}

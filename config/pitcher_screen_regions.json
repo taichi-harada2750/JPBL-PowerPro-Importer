@@ -1,0 +1,18 @@
+{
+  "description": "2026-08-21提供の1920x1080投手記録画面で校正済み。防御率列はOCR対象外。",
+  "columns": {
+    "decision": { "x": 193, "y": 0, "width": 69, "height": 56 },
+    "name": { "x": 263, "y": 0, "width": 234, "height": 56 },
+    "innings": { "x": 499, "y": 0, "width": 141, "height": 56 },
+    "pitches": { "x": 648, "y": 0, "width": 140, "height": 56 },
+    "batters_faced": { "x": 796, "y": 0, "width": 88, "height": 56 },
+    "hits_allowed": { "x": 892, "y": 0, "width": 88, "height": 56 },
+    "strikeouts": { "x": 988, "y": 0, "width": 88, "height": 56 },
+    "walks_hbp": { "x": 1084, "y": 0, "width": 88, "height": 56 },
+    "runs": { "x": 1180, "y": 0, "width": 88, "height": 56 },
+    "earned_runs": { "x": 1276, "y": 0, "width": 88, "height": 56 },
+    "wild_pitches": { "x": 1372, "y": 0, "width": 88, "height": 56 },
+    "home_runs_allowed": { "x": 1468, "y": 0, "width": 88, "height": 56 }
+  },
+  "rows": { "firstRowY": 344, "rowHeight": 56, "rowStride": 64, "maxRows": 9, "rowInkThreshold": 0.012 }
+}

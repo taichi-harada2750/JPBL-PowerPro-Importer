@@ -1,0 +1,14 @@
+# PaddleOCR 3.7/PaddleX currently requires this exact OpenCV build.  It also
+# provides the `cv2` module used by the screen parser.
+opencv-contrib-python==4.10.0.84
+# PaddleX creates a PDF-capable image reader even when this application passes
+# only PNG/JPEG screenshots.  Keep this explicit for reproducible EXE builds.
+pypdfium2>=5.13,<6
+PySide6>=6.7,<7
+PySide6-Fluent-Widgets==1.11.3
+paddlepaddle>=3.0,<4
+paddleocr>=3.0,<4
+# PaddleX checks this by distribution metadata at runtime; the PyInstaller
+# build script explicitly copies that metadata into the distributed app.
+python-bidi>=0.6,<0.7
+rapidfuzz>=3.9,<4
