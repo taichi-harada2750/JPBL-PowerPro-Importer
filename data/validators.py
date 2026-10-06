@@ -76,12 +76,16 @@ def _validate_player(index: int, player: PlayerRecord, name_list: NameList) -> l
         errors.append(f"{prefix}: 備考は文字列である必要があります")
     for stat in fields(player.stats):
         value = getattr(player.stats, stat.name)
+        if isinstance(player.stats, PitcherStats) and stat.name in ("qs", "hqs") and value is None:
+            continue
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             errors.append(f"{prefix}: {stat.name}は0以上の整数である必要があります")
     if isinstance(player.stats, PitcherStats) and player.stats.inning_fraction not in (0, 1, 2):
         errors.append(f"{prefix}: 投球回分数は0、1、2のいずれかである必要があります")
     if isinstance(player.stats, PitcherStats):
-        for field_name in ("appearances", "starts", "wins", "losses", "holds", "saves", "complete_games", "shutouts", "no_walk_games"):
+        for field_name in ("appearances", "qs", "hqs", "starts", "wins", "losses", "holds", "saves", "complete_games", "shutouts", "no_walk_games"):
+            if getattr(player.stats, field_name) is None and field_name in ("qs", "hqs"):
+                continue
             if getattr(player.stats, field_name) not in (0, 1):
                 errors.append(f"{prefix}: {field_name}は0または1である必要があります")
     return errors

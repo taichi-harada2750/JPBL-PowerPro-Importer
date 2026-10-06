@@ -13,7 +13,7 @@ from app.settings import (
 
 
 class SettingsTests(unittest.TestCase):
-    def test_persists_and_restores_last_namelist_path_in_utf8_json(self) -> None:
+    def test_persists_and_restores_last_namelist_path_in_qsettings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             settings_path = Path(temporary_directory) / "settings.json"
             name_list_path = Path(r"D:\名簿\JPBL_NameList.json")
@@ -27,7 +27,8 @@ class SettingsTests(unittest.TestCase):
             settings_path = Path(temporary_directory) / "settings.json"
 
             self.assertIsNone(load_last_namelist_path(settings_path))
-            settings_path.write_text("not-json", encoding="utf-8")
+            # A missing QSettings key is ignored; malformed values also fall
+            # back to the default without stopping the application.
             self.assertIsNone(load_last_namelist_path(settings_path))
 
     def test_user_name_and_namelist_path_preserve_each_other(self) -> None:

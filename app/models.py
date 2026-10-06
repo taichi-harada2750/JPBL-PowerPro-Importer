@@ -65,8 +65,10 @@ class PitcherStats:
     earned_runs: int = 0
     wild_pitches: int = 0
     home_runs_allowed: int = 0
-    qs: int = 0
-    hqs: int = 0
+    # ``None`` means that an internal caller did not supply a reviewed value;
+    # the exporter retains the legacy fallback calculation in that case.
+    qs: int | None = None
+    hqs: int | None = None
     complete_games: int = 0
     shutouts: int = 0
     no_walk_games: int = 0
@@ -129,14 +131,14 @@ PITCHER_OCR_FIELDS = (
     "home_runs_allowed",
 )
 PITCHER_MANUAL_BINARY_FIELDS = (
-    "starts", "wins", "losses", "holds", "saves", "complete_games", "shutouts", "no_walk_games",
+    "qs", "hqs", "starts", "wins", "losses", "holds", "saves", "complete_games", "shutouts", "no_walk_games",
 )
 PITCHER_MANUAL_INTEGER_FIELDS = ("intentional_walks",)
 PITCHER_STAT_LABELS = {
     "innings": "投球回", "inning_fraction": "投球回分数", "pitches": "球数",
     "batters_faced": "打者", "hits_allowed": "被安打", "strikeouts": "奪三振",
     "walks_hbp": "四死球", "runs": "失点", "earned_runs": "自責点",
-    "wild_pitches": "暴投", "home_runs_allowed": "被本塁打", "starts": "先発",
+    "wild_pitches": "暴投", "home_runs_allowed": "被本塁打", "qs": "QS", "hqs": "HQS", "starts": "先発",
     "wins": "勝利", "losses": "敗戦", "holds": "H", "saves": "S",
     "complete_games": "完投", "shutouts": "完封", "no_walk_games": "無四球",
     "intentional_walks": "敬遠数",
@@ -159,6 +161,7 @@ class RecognizedBatter:
     second_name: str | None = None
     second_score: float | None = None
     requires_review: bool = True
+    excluded_from_export: bool = False
     manually_corrected_name: bool = False
     manually_added_name: bool = False
     at_bats: int | None = None
@@ -198,7 +201,9 @@ class RecognizedBatter:
         return tuple(field_name for field_name in BATTER_STAT_FIELDS if getattr(self, field_name) is None)
 
     @property
-    def status(self) -> Literal["OK", "要確認", "エラー"]:
+    def status(self) -> Literal["OK", "要確認", "エラー", "除外"]:
+        if self.excluded_from_export:
+            return "除外"
         if self.matched_name is None or self.missing_stat_fields:
             return "エラー"
         return "要確認" if self.requires_review else "OK"
@@ -206,6 +211,8 @@ class RecognizedBatter:
     @property
     def review_reasons(self) -> tuple[str, ...]:
         """Human-readable reasons shown alongside the review status."""
+        if self.excluded_from_export:
+            return ("GameJSON出力から手動で除外",)
         reasons: list[str] = []
         if self.matched_name is None:
             reasons.append("正式名が未選択")
@@ -245,6 +252,7 @@ class RecognizedBatter:
             "secondName": self.second_name,
             "secondScore": self.second_score,
             "requiresReview": self.requires_review,
+            "excludedFromExport": self.excluded_from_export,
             "manuallyCorrectedName": self.manually_corrected_name,
             "manuallyAddedName": self.manually_added_name,
             "stats": {field_name: getattr(self, field_name) for field_name in BATTER_STAT_FIELDS},
@@ -266,6 +274,7 @@ class RecognizedPitcher:
     second_name: str | None = None
     second_score: float | None = None
     requires_review: bool = True
+    excluded_from_export: bool = False
     manually_corrected_name: bool = False
     manually_added_name: bool = False
     innings: int | None = None
@@ -279,6 +288,8 @@ class RecognizedPitcher:
     earned_runs: int | None = None
     wild_pitches: int | None = None
     home_runs_allowed: int | None = None
+    qs: int = 0
+    hqs: int = 0
     starts: int = 0
     wins: int = 0
     losses: int = 0
@@ -335,6 +346,12 @@ class RecognizedPitcher:
             outs = self.innings * 3 + self.inning_fraction
         is_complete_game = only_pitcher or (outs is not None and outs >= 27)
 
+        qs, hqs = self.qs_hqs
+        if "qs" not in self.manually_corrected_stats:
+            self.qs = qs
+        if "hqs" not in self.manually_corrected_stats:
+            self.hqs = hqs
+
         if "complete_games" not in self.manually_corrected_stats:
             self.complete_games = int(is_complete_game)
         if "shutouts" not in self.manually_corrected_stats:
@@ -347,7 +364,9 @@ class RecognizedPitcher:
         return tuple(field_name for field_name in PITCHER_OCR_FIELDS if getattr(self, field_name) is None)
 
     @property
-    def status(self) -> Literal["OK", "要確認", "エラー"]:
+    def status(self) -> Literal["OK", "要確認", "エラー", "除外"]:
+        if self.excluded_from_export:
+            return "除外"
         if self.matched_name is None or self.missing_stat_fields:
             return "エラー"
         return "要確認" if self.requires_review else "OK"
@@ -363,6 +382,8 @@ class RecognizedPitcher:
 
     @property
     def review_reasons(self) -> tuple[str, ...]:
+        if self.excluded_from_export:
+            return ("GameJSON出力から手動で除外",)
         reasons: list[str] = []
         if self.matched_name is None:
             reasons.append("正式名が未選択")
@@ -385,7 +406,7 @@ class RecognizedPitcher:
         if self.missing_stat_fields:
             raise ValueError("未確認の投手数値が残っているため成績へ変換できません")
         return PitcherStats(
-            appearances=1, starts=self.starts, wins=self.wins, losses=self.losses, holds=self.holds,
+            appearances=1, qs=self.qs, hqs=self.hqs, starts=self.starts, wins=self.wins, losses=self.losses, holds=self.holds,
             saves=self.saves, innings=self.innings, inning_fraction=self.inning_fraction,
             pitches=self.pitches, batters_faced=self.batters_faced, hits_allowed=self.hits_allowed,
             strikeouts=self.strikeouts, walks_hbp=self.walks_hbp, runs=self.runs,
@@ -400,6 +421,7 @@ class RecognizedPitcher:
             "ocrName": self.ocr_name, "matchedName": self.matched_name,
             "matchScore": self.match_score, "matchSource": self.match_source, "secondName": self.second_name,
             "secondScore": self.second_score, "requiresReview": self.requires_review,
+            "excludedFromExport": self.excluded_from_export,
             "manuallyCorrectedName": self.manually_corrected_name,
             "manuallyAddedName": self.manually_added_name,
             "stats": {name: getattr(self, name) for name in PITCHER_OCR_FIELDS + PITCHER_MANUAL_BINARY_FIELDS + PITCHER_MANUAL_INTEGER_FIELDS},

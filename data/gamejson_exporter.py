@@ -86,7 +86,9 @@ class GameJsonExporter:
 
     @staticmethod
     def _pitcher_adds(stats: PitcherStats, game_date: str, remarks: str) -> dict[str, int | str]:
-        qs, hqs = calculate_qs_hqs(stats.innings, stats.inning_fraction, stats.earned_runs)
+        calculated_qs, calculated_hqs = calculate_qs_hqs(stats.innings, stats.inning_fraction, stats.earned_runs)
+        qs = calculated_qs if stats.qs is None else stats.qs
+        hqs = calculated_hqs if stats.hqs is None else stats.hqs
         return {
             "登板": 1,
             "先発": stats.starts,

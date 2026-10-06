@@ -30,3 +30,10 @@ class RecognizedBatterTests(unittest.TestCase):
         self.assertIn("正式名が未選択", batter.review_reasons)
         self.assertIn("数値が未入力: 打数", batter.review_reason_text)
         self.assertEqual(batter.to_serializable_dict()["remarks"], "代打")
+
+    def test_excluded_record_has_a_distinct_non_blocking_status(self) -> None:
+        batter = RecognizedBatter(excluded_from_export=True)
+
+        self.assertEqual(batter.status, "除外")
+        self.assertEqual(batter.review_reason_text, "GameJSON出力から手動で除外")
+        self.assertTrue(batter.to_serializable_dict()["excludedFromExport"])

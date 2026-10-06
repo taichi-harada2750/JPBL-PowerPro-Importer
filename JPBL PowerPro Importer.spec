@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import copy_metadata
 
-datas = [('config/batter_screen_regions.json', 'config'), ('config/pitcher_screen_regions.json', 'config'), ('runtime', 'runtime')]
+datas = [('assets/icon.ico', 'assets'), ('config/batter_screen_regions.json', 'config'), ('config/pitcher_screen_regions.json', 'config'), ('runtime', 'runtime')]
 binaries = []
 hiddenimports = []
 datas += copy_metadata('python-bidi')
@@ -55,7 +55,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['D:/作品/JPBL/JPBLロゴ白枠あり.png'],
+    version='version_info.txt',
+    icon=['assets/icon.ico'],
 )
 coll = COLLECT(
     exe,

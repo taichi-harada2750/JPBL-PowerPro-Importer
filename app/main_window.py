@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import sys
 import re
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QAction, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -18,6 +19,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QStackedWidget,
     QSplitter,
     QVBoxLayout,
@@ -32,9 +37,17 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     Theme,
+    isDarkTheme,
     setTheme,
 )
 
+from app.app_info import APP_NAME, APP_VERSION, ORG_NAME
+from app.app_settings import (
+    get_settings, image_last_directory, reset_user_preferences, set_image_last_directory,
+    set_theme, theme,
+)
+from app.logging_setup import configure_logging
+from app.resources import resource_path
 from app.models import InternalGame, PlayerRecord, RecognitionInfo
 from app.settings import (
     load_last_namelist_path,
@@ -65,6 +78,24 @@ QFrame#previewPanel, QLabel#previewLabel {
     border-radius: 4px;
 }
 QLabel { color: #f1f5f9; }
+QDialog, QMessageBox {
+    background-color: #141a21;
+    color: #f1f5f9;
+}
+QDialog QLabel, QMessageBox QLabel { color: #f1f5f9; }
+QDialogButtonBox QPushButton, QMessageBox QPushButton {
+    background-color: #202a35;
+    color: #f1f5f9;
+    border: 1px solid #64748b;
+    border-radius: 4px;
+    padding: 5px 12px;
+}
+QDialogButtonBox QPushButton:hover, QMessageBox QPushButton:hover { background-color: #334155; }
+QMenuBar, QMenu {
+    background-color: #141a21;
+    color: #f1f5f9;
+}
+QMenuBar::item:selected, QMenu::item:selected { background-color: #2563eb; color: #ffffff; }
 QTableWidget QLineEdit, QTableWidget QComboBox {
     background-color: #202a35;
     color: #ffffff;
@@ -95,6 +126,66 @@ QHeaderView::section {
 QToolTip { background-color: #0f172a; color: #ffffff; border: 1px solid #64748b; }
 """
 
+LIGHT_STYLE = """
+QMainWindow, QWidget#appRoot {
+    background-color: #f8fafc;
+    color: #1f2937;
+    font-size: 13px;
+}
+QFrame#previewPanel, QLabel#previewLabel {
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+}
+QLabel { color: #1f2937; }
+QDialog, QMessageBox {
+    background-color: #f8fafc;
+    color: #1f2937;
+}
+QDialog QLabel, QMessageBox QLabel { color: #1f2937; }
+QDialogButtonBox QPushButton, QMessageBox QPushButton {
+    background-color: #ffffff;
+    color: #1f2937;
+    border: 1px solid #94a3b8;
+    border-radius: 4px;
+    padding: 5px 12px;
+}
+QDialogButtonBox QPushButton:hover, QMessageBox QPushButton:hover { background-color: #e2e8f0; }
+QMenuBar, QMenu {
+    background-color: #f8fafc;
+    color: #1f2937;
+}
+QMenuBar::item:selected, QMenu::item:selected { background-color: #bfdbfe; color: #111827; }
+QTableWidget QLineEdit, QTableWidget QComboBox {
+    background-color: #ffffff;
+    color: #111827;
+    border: 1px solid #94a3b8;
+    border-radius: 3px;
+    padding: 4px;
+}
+QTableWidget QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    color: #111827;
+    selection-background-color: #bfdbfe;
+    selection-color: #111827;
+}
+QTableWidget {
+    background-color: #ffffff;
+    alternate-background-color: #f8fafc;
+    color: #111827;
+    gridline-color: #cbd5e1;
+    border: 1px solid #cbd5e1;
+}
+QTableWidget::item { color: #111827; }
+QTableWidget::item:selected { background-color: #bfdbfe; color: #111827; }
+QHeaderView::section {
+    background-color: #e2e8f0;
+    color: #1e293b;
+    border: 1px solid #cbd5e1;
+    padding: 5px;
+}
+QToolTip { background-color: #ffffff; color: #111827; border: 1px solid #94a3b8; }
+"""
+
 
 # Display order only.  NameList keeps its original team keys and all OCR /
 # GameJSON lookups continue to use those exact names.
@@ -115,8 +206,13 @@ TEAM_GAME_ID_CODES = {
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        setTheme(Theme.DARK)
-        self.setWindowTitle("JPBL PowerPro Importer - 野手成績")
+        self._settings = get_settings()
+        self._logger = logging.getLogger("jpbl_powerpro_importer")
+        self._apply_theme(theme(self._settings))
+        self.setWindowTitle(f"{APP_NAME} - 野手成績")
+        icon_path = resource_path("assets/icon.ico")
+        if icon_path.is_file():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1500, 900)
         self.setAcceptDrops(True)
         self._name_list: NameList | None = None
@@ -125,10 +221,11 @@ class MainWindow(QMainWindow):
         self._source_rows: list[PlayerRowImage] = []
 
         self._build_ui()
-        self.setStyleSheet(DARK_STYLE)
+        self._restore_window_state()
         self._restore_last_namelist()
 
     def _build_ui(self) -> None:
+        self._build_menu()
         root = QWidget(self)
         root.setObjectName("appRoot")
         root_layout = QVBoxLayout(root)
@@ -148,7 +245,7 @@ class MainWindow(QMainWindow):
         name_layout.addWidget(self.name_list_label, 1)
         self.name_list_status = QLabel("未読込")
         self.name_list_status.setObjectName("statusTag")
-        self.name_list_status.setStyleSheet("QLabel#statusTag { color: #94a3b8; }")
+        self._set_name_list_status_style(loaded=False)
         name_layout.addWidget(self.name_list_status)
 
         select_name_list = PushButton("変更")
@@ -173,7 +270,9 @@ class MainWindow(QMainWindow):
         self.user_name_edit.editingFinished.connect(self.save_user_name_setting)
         user_layout.addWidget(self.user_name_edit)
         user_hint = QLabel("空欄時: UKN / 入力後に自動保存")
-        user_hint.setStyleSheet("color: #94a3b8;")
+        user_hint.setObjectName("userHint")
+        self.user_hint = user_hint
+        self._set_user_hint_style()
         user_layout.addWidget(user_hint)
         user_layout.addStretch(1)
         root_layout.addWidget(user_card)
@@ -282,6 +381,8 @@ class MainWindow(QMainWindow):
 
         self.batter_review_table = BatterReviewTable(root)
         self.pitcher_review_table = PitcherReviewTable(root)
+        self.batter_review_table.set_theme(self._is_dark_theme)
+        self.pitcher_review_table.set_theme(self._is_dark_theme)
         self.review_table = self.batter_review_table
         for table in (self.batter_review_table, self.pitcher_review_table):
             table.row_selected.connect(self.show_row_preview)
@@ -312,14 +413,98 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self._refresh_generated_game_id()
 
+    def _build_menu(self) -> None:
+        settings_action = QAction("設定", self)
+        settings_action.triggered.connect(self.show_settings_dialog)
+        self.menuBar().addMenu("設定").addAction(settings_action)
+        about_action = QAction("このアプリについて", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        self.menuBar().addMenu("ヘルプ").addAction(about_action)
+
+    def _apply_theme(self, value: str) -> None:
+        value = value if value in ("dark", "light", "system") else "dark"
+        setTheme({"dark": Theme.DARK, "light": Theme.LIGHT, "system": Theme.AUTO}[value])
+        self._is_dark_theme = isDarkTheme()
+        self.setStyleSheet(DARK_STYLE if self._is_dark_theme else LIGHT_STYLE)
+        if hasattr(self, "name_list_status"):
+            self._set_name_list_status_style(loaded=self._name_list is not None)
+        if hasattr(self, "user_hint"):
+            self._set_user_hint_style()
+        for table_name in ("batter_review_table", "pitcher_review_table"):
+            if hasattr(self, table_name):
+                getattr(self, table_name).set_theme(self._is_dark_theme)
+
+    def _set_name_list_status_style(self, *, loaded: bool) -> None:
+        color = "#86efac" if loaded and self._is_dark_theme else "#166534" if loaded else "#94a3b8" if self._is_dark_theme else "#64748b"
+        self.name_list_status.setStyleSheet(f"QLabel#statusTag {{ color: {color}; }}")
+
+    def _set_user_hint_style(self) -> None:
+        color = "#94a3b8" if self._is_dark_theme else "#64748b"
+        self.user_hint.setStyleSheet(f"QLabel#userHint {{ color: {color}; }}")
+
+    def _apply_dialog_theme(self, dialog: QDialog) -> None:
+        """Apply the app palette to top-level Qt dialogs as well."""
+        dialog.setStyleSheet(DARK_STYLE if self._is_dark_theme else LIGHT_STYLE)
+
+    def show_settings_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("設定")
+        self._apply_dialog_theme(dialog)
+        layout = QFormLayout(dialog)
+        theme_combo = ComboBox(dialog)
+        choices = (("ダーク", "dark"), ("ライト", "light"), ("システム設定に従う", "system"))
+        for label, value in choices:
+            theme_combo.addItem(label, userData=value)
+        theme_combo.setCurrentIndex(next(index for index, (_label, value) in enumerate(choices) if value == theme(self._settings)))
+        layout.addRow("テーマ", theme_combo)
+        layout.addRow("NameList", QLabel(self.name_list_label.text(), dialog))
+        reset_button = PushButton("設定を初期化", dialog)
+        reset_button.clicked.connect(lambda: self._confirm_reset_preferences(dialog))
+        layout.addRow("", reset_button)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            value = theme_combo.currentData()
+            set_theme(value if isinstance(value, str) else "dark", self._settings)
+            self._apply_theme(theme(self._settings))
+
+    def _confirm_reset_preferences(self, dialog: QDialog) -> None:
+        message = QMessageBox(QMessageBox.Icon.Question, "設定を初期化", "ウィンドウ状態、NameList、画像フォルダ、テーマを初期化しますか？", parent=self)
+        message.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        self._apply_dialog_theme(message)
+        answer = message.exec()
+        if answer == QMessageBox.StandardButton.Yes:
+            reset_user_preferences(self._settings)
+            self._apply_theme("dark")
+            dialog.accept()
+
+    def show_about_dialog(self) -> None:
+        dialog = QMessageBox(QMessageBox.Icon.Information, f"{APP_NAME} について", f"{APP_NAME}\nVersion {APP_VERSION}\n\nJPBL成績入力支援ツール\n\nPython / PySide6\n\n©2026 JPBL Systems Department", parent=self)
+        self._apply_dialog_theme(dialog)
+        dialog.exec()
+
+    def _restore_window_state(self) -> None:
+        geometry = self._settings.value("window/geometry")
+        if geometry is not None and self.restoreGeometry(geometry):
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is not None and not self.frameGeometry().intersects(screen.availableGeometry()):
+                self.resize(1500, 900)
+                self.move(screen.availableGeometry().center() - self.rect().center())
+        state = self._settings.value("window/state")
+        if state is not None:
+            self.restoreState(state)
+
     @staticmethod
     def _section_label(text: str) -> QLabel:
         label = QLabel(text)
-        label.setStyleSheet("font-size: 13px; font-weight: 600; color: #e2e8f0;")
+        label.setStyleSheet("font-size: 13px; font-weight: 600;")
         return label
 
     def select_name_list(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "NameListを選択", "", "JSON (*.json)")
+        initial_path = str(self._name_list_path()) if self._name_list_path() else ""
+        path, _ = QFileDialog.getOpenFileName(self, "NameListを選択", initial_path, "JSON (*.json)")
         if path:
             self.load_name_list(Path(path))
 
@@ -327,13 +512,14 @@ class MainWindow(QMainWindow):
         try:
             name_list = NameList.from_file(path)
         except NameListError as error:
+            self._logger.warning("NameList読込失敗: %s", path, exc_info=True)
             self._show_error("NameListを読み込めません", str(error))
             return
         self._name_list = name_list
         self.name_list_label.setText(path.name)
         self.name_list_label.setToolTip(str(path))
         self.name_list_status.setText("読込済")
-        self.name_list_status.setStyleSheet("QLabel#statusTag { color: #86efac; }")
+        self._set_name_list_status_style(loaded=True)
         self.team_combo.clear()
         team_groups = self._team_display_groups(name_list.team_names())
         for group_index, team_group in enumerate(team_groups):
@@ -345,6 +531,7 @@ class MainWindow(QMainWindow):
         self.team_combo.setEnabled(True)
         if save_as_last:
             save_last_namelist_path(path)
+            self._logger.info("NameList読込: %s", path)
             self._show_success("NameListを読み込みました", path.name)
         self._update_analyze_enabled()
         self._refresh_generated_game_id()
@@ -353,6 +540,10 @@ class MainWindow(QMainWindow):
         path = load_last_namelist_path()
         if path is not None and path.is_file():
             self.load_name_list(path, save_as_last=False)
+
+    def _name_list_path(self) -> Path | None:
+        value = load_last_namelist_path()
+        return value if value is not None and value.is_file() else None
 
     @staticmethod
     def _team_display_groups(team_names: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
@@ -445,9 +636,10 @@ class MainWindow(QMainWindow):
 
     def select_image(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
-            self, f"{self.screen_kind_combo.currentText()}画像を選択（上側→下側、最大2枚）", "", "画像 (*.png *.jpg *.jpeg *.bmp *.webp)"
+            self, f"{self.screen_kind_combo.currentText()}画像を選択（上側→下側、最大2枚）", image_last_directory(self._settings), "画像 (*.png *.jpg *.jpeg *.bmp *.webp)"
         )
         if paths:
+            set_image_last_directory(Path(paths[0]).parent, self._settings)
             self.load_images([Path(path) for path in paths])
 
     def load_image(self, path: Path) -> None:
@@ -541,6 +733,9 @@ class MainWindow(QMainWindow):
     def analyze_image(self) -> None:
         if self._name_list is None or not self._images:
             return
+        if not self._confirm_image_analysis():
+            return
+        self._logger.info("画像解析開始: count=%d mode=%s", len(self._images), self._screen_kind())
         try:
             engine = PaddleOcrEngine()
             team = self.team_combo.currentText()
@@ -557,6 +752,7 @@ class MainWindow(QMainWindow):
                 )
                 candidates = self._name_list.get_batters(team)
         except (OcrEngineUnavailableError, RuntimeError, ValueError) as error:
+            self._logger.exception("画像解析失敗")
             self._show_error("画像を解析できません", str(error))
             return
         if not records:
@@ -565,18 +761,35 @@ class MainWindow(QMainWindow):
             config = "pitcher_screen_regions.json" if self._screen_kind() == "pitcher" else "batter_screen_regions.json"
             self.preview_label.setText(f"選手行を検出できませんでした。\nconfig/{config}を実機画像に合わせて校正してください。")
             self.summary_label.setText("検出行: 0")
+            self._logger.info("画像解析完了: records=0")
             return
         self._source_rows = rows
         self.review_table.set_records(records, candidates)
         self._update_summary()
         self._show_success("画像解析が完了しました", f"{len(records)}行を確認テーブルへ追加しました")
+        self._logger.info("画像解析完了: records=%d", len(records))
+
+    def _confirm_image_analysis(self) -> bool:
+        """Confirm the current inputs before creating the OCR engine."""
+        image_names = "\n".join(path.name for path in self._image_paths)
+        dialog = QMessageBox(QMessageBox.Icon.Question, "解析前の確認", "この設定で画像を解析しますか？", parent=self)
+        self._apply_dialog_theme(dialog)
+        dialog.setInformativeText(
+            f"球団: {self.team_combo.currentText()}\n"
+            f"成績種別: {self.screen_kind_combo.currentText()}\n"
+            f"画像: {image_names}"
+        )
+        analyze_button = dialog.addButton("解析する", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("戻る", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        return dialog.clickedButton() is analyze_button
 
     def _update_summary(self) -> None:
         records = self.review_table.records
-        states = {state: sum(record.status == state for record in records) for state in ("OK", "要確認", "エラー")}
+        states = {state: sum(record.status == state for record in records) for state in ("OK", "要確認", "エラー", "除外")}
         filter_note = "（赤色の投手行は除外）" if self._screen_kind() == "batter" else ""
         self.summary_label.setText(
-            f"検出行: {len(records)}{filter_note} / OK: {states['OK']} / 要確認: {states['要確認']} / エラー: {states['エラー']}"
+            f"検出行: {len(records)}{filter_note} / OK: {states['OK']} / 要確認: {states['要確認']} / エラー: {states['エラー']} / 除外: {states['除外']}"
         )
         self._update_export_enabled()
 
@@ -602,11 +815,15 @@ class MainWindow(QMainWindow):
             raise ValueError("球団を選択してください")
         players: list[PlayerRecord] = []
         for record in self.batter_review_table.records:
+            if record.excluded_from_export:
+                continue
             players.append(PlayerRecord(
                 team=team, position="野手", recognition=self._recognition_info(record),
                 stats=record.to_batter_stats(), remarks=record.remarks,
             ))
         for record in self.pitcher_review_table.records:
+            if record.excluded_from_export:
+                continue
             players.append(PlayerRecord(
                 team=team, position="投手", recognition=self._recognition_info(record),
                 stats=record.to_pitcher_stats(), remarks=record.remarks,
@@ -631,6 +848,7 @@ class MainWindow(QMainWindow):
             # path is never selected for data that cannot be written.
             exporter.export(game, self._name_list)
         except (ValidationError, ValueError, RuntimeError) as error:
+            self._logger.exception("GameJSON出力失敗")
             self._show_error("GameJSONを書き出せません", str(error))
             return
         safe_game_id = re.sub(r'[\\/:*?"<>|]+', "_", game.game_id) or "game"
@@ -645,9 +863,11 @@ class MainWindow(QMainWindow):
         try:
             exporter.export_to_file(game, self._name_list, output_path)
         except (OSError, ValidationError, ValueError, RuntimeError) as error:
+            self._logger.exception("GameJSON出力失敗")
             self._show_error("GameJSONを書き出せません", str(error))
             return
         self._advance_game_id_serial()
+        self._logger.info("GameJSON出力: %s", output_path)
         self._show_success("GameJSONを書き出しました", str(output_path))
 
     def show_row_preview(self, table_row: int) -> None:
@@ -692,10 +912,25 @@ class MainWindow(QMainWindow):
             title, detail, duration=3500, position=InfoBarPosition.TOP_RIGHT, parent=self,
         )
 
+    def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._settings.setValue("window/geometry", self.saveGeometry())
+        self._settings.setValue("window/state", self.saveState())
+        self._settings.sync()
+        self._logger.info("アプリケーション終了")
+        event.accept()
+
 
 def run() -> None:
     application = QApplication(sys.argv)
-    setTheme(Theme.DARK)
+    application.setApplicationName(APP_NAME)
+    application.setApplicationDisplayName(APP_NAME)
+    application.setOrganizationName(ORG_NAME)
+    application.setApplicationVersion(APP_VERSION)
+    icon_path = resource_path("assets/icon.ico")
+    if icon_path.is_file():
+        application.setWindowIcon(QIcon(str(icon_path)))
+    logger = configure_logging()
+    logger.info("アプリケーション起動 version=%s", APP_VERSION)
     window = MainWindow()
     window.show()
     raise SystemExit(application.exec())

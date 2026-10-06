@@ -31,9 +31,10 @@ class BatterScreenLayout:
     row_bounds: tuple[tuple[int, int], ...] = ()
 
 
-_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LAYOUT_PATH = _ROOT / "config" / "batter_screen_regions.json"
-DEFAULT_PITCHER_LAYOUT_PATH = _ROOT / "config" / "pitcher_screen_regions.json"
+from app.resources import resource_path
+
+DEFAULT_LAYOUT_PATH = resource_path("config/batter_screen_regions.json")
+DEFAULT_PITCHER_LAYOUT_PATH = resource_path("config/pitcher_screen_regions.json")
 
 
 def _load_layout(path: str | Path) -> BatterScreenLayout:
@@ -98,6 +99,140 @@ def _closest_group(groups: list[tuple[int, int]], target: int, tolerance: int) -
 
 def _group_centers(groups: list[tuple[int, int]]) -> list[float]:
     return [(start + end) / 2 for start, end in groups]
+
+
+def _shifted_pitcher_layout_from_blue_headers(image: Any, layout: BatterScreenLayout) -> BatterScreenLayout | None:
+    """Find a materially shifted pitcher table from its blue header cells.
+
+    The normal calibrated layout remains the primary path.  This narrow
+    fallback exists for a full-size screenshot whose pitcher table is moved
+    horizontally far enough that the white-grid refinement can mistake header
+    glyphs for row separators.  It is intentionally pitcher-only: applying it
+    to normal batting screens made their tightly calibrated OCR interiors too
+    large.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    if image is None or len(image.shape) != 3:
+        return None
+    height, width = image.shape[:2]
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    blue = (
+        (hsv[:, :, 0] >= 90) & (hsv[:, :, 0] <= 125)
+        & (hsv[:, :, 1] >= 100) & (hsv[:, :, 2] >= 100)
+    ).astype(np.uint8) * 255
+    blue = cv2.morphologyEx(
+        blue, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+    )
+    _count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(blue)
+    components = [
+        tuple(map(int, values[:4])) for values in stats[1:]
+        if width * 0.025 <= values[2] <= width * 0.25
+        and height * 0.045 <= values[3] <= height * 0.16
+    ]
+    header_names = [name for name in layout.columns if name != "decision"]
+    if len(components) < len(header_names):
+        return None
+    y_tolerance = max(4, round(height * 0.008))
+    height_tolerance = max(5, round(height * 0.012))
+    best: list[tuple[int, int, int, int]] = []
+    for x, y, cell_width, cell_height in components:
+        del x, cell_width
+        candidate = [
+            other for other in components
+            if abs(other[1] - y) <= y_tolerance
+            and abs(other[3] - cell_height) <= height_tolerance
+        ]
+        candidate.sort(key=lambda values: values[0])
+        if len(candidate) > len(best):
+            best = candidate
+    gap_limit = max(18, round(width * 0.018))
+    runs: list[list[tuple[int, int, int, int]]] = [[]]
+    for component in best:
+        if runs[-1] and component[0] - (runs[-1][-1][0] + runs[-1][-1][2]) > gap_limit:
+            runs.append([])
+        runs[-1].append(component)
+    headers = max(runs, key=len, default=[])
+    if len(headers) < len(header_names):
+        return None
+    headers = headers[:len(header_names)]
+    # Avoid changing established captures.  A small shift is already handled
+    # by the legacy white-grid alignment; this path needs a material mismatch.
+    if abs(headers[0][0] - layout.columns["name"].x) <= max(20, round(width * 0.02)):
+        return None
+
+    columns = {
+        name: Region(x, 0, cell_width, layout.columns[name].height)
+        for name, (x, _y, cell_width, _cell_height) in zip(header_names, headers)
+    }
+    header_y = int(round(statistics.median(values[1] for values in headers)))
+    header_height = int(round(statistics.median(values[3] for values in headers)))
+    marker_candidates = [
+        tuple(map(int, values[:4])) for values in stats[1:]
+        if values[0] < headers[0][0]
+        and header_y + header_height <= values[1] <= header_y + header_height + header_height
+        and width * 0.015 <= values[2] <= width * 0.10
+        and height * 0.025 <= values[3] <= height * 0.10
+    ]
+    # Just like the batter-table alignment, prefer actual horizontal cell
+    # separators over an assumed stride.  Shifted multi-pitcher screens use a
+    # 60px rhythm here, while the one-row screen has no following separator.
+    # The latter deliberately falls through to the marker-derived geometry.
+    stat_left = headers[1][0] if len(headers) > 1 else headers[0][0]
+    stat_right = headers[-1][0] + headers[-1][2]
+    white = np.all(image > 235, axis=2)
+    horizontal_groups = _contiguous_groups(
+        np.flatnonzero(white[:, stat_left:stat_right].mean(axis=1) > 0.80), max_gap=4,
+    )
+    data_separators = [
+        group for group in horizontal_groups
+        if group[1] >= header_y + header_height
+    ]
+    data_separators = _longest_regular_run(
+        data_separators, height * 0.035, height * 0.11,
+    )
+    row_bounds = tuple(
+        (left[1] + 1, right[0] - left[1] - 1)
+        for left, right in zip(data_separators, data_separators[1:])
+        if right[0] - left[1] - 1 > 8
+    )[:layout.max_rows]
+    if len(data_separators) >= 3 and row_bounds:
+        row_height = int(round(statistics.median(value for _y, value in row_bounds)))
+        row_stride = int(round(statistics.median(
+            right[0] - left[0] for left, right in zip(row_bounds, row_bounds[1:])
+        ))) if len(row_bounds) > 1 else row_height
+        columns["decision"] = Region(
+            marker_candidates[0][0] if marker_candidates else columns["name"].x - layout.columns["decision"].width,
+            0,
+            marker_candidates[0][2] if marker_candidates else layout.columns["decision"].width,
+            layout.columns["decision"].height,
+        )
+        return BatterScreenLayout(
+            columns, row_bounds[0][0], row_height, row_stride,
+            layout.max_rows, layout.row_ink_threshold, row_bounds,
+        )
+    if marker_candidates:
+        marker = max(marker_candidates, key=lambda values: values[2] * values[3])
+        columns["decision"] = Region(marker[0], 0, marker[2], layout.columns["decision"].height)
+        first_row_y, row_height = marker[1], marker[3]
+    else:
+        scale = headers[0][2] / layout.columns["name"].width
+        decision = layout.columns["decision"]
+        name = layout.columns["name"]
+        columns["decision"] = Region(
+            columns["name"].x - round((name.x - decision.x) * scale),
+            0, max(1, round(decision.width * scale)), decision.height,
+        )
+        first_row_y = header_y + header_height + max(4, round(header_height * 0.07))
+        row_height = max(12, round(layout.row_height * header_height / 109))
+    return BatterScreenLayout(
+        columns, first_row_y, row_height,
+        max(row_height, round(row_height * layout.row_stride / layout.row_height)),
+        layout.max_rows, layout.row_ink_threshold,
+    )
 
 
 def _longest_regular_run(
@@ -279,12 +414,17 @@ def align_batter_layout(image: Any, layout: BatterScreenLayout) -> BatterScreenL
 
 
 def align_pitcher_layout(image: Any, layout: BatterScreenLayout) -> BatterScreenLayout:
-    """Align pitcher columns to nearby grid lines without using ERA as data.
+    """Refine pitcher cells with the same safe grid rules as batting cells.
 
-    Pitcher columns have intentionally uneven widths, so the batter-specific
-    equal-spacing detector is not applicable.  The shared configured geometry
-    remains the anchor and is refined by bright separator lines when present.
+    Pitcher columns retain their own calibrated widths, but row alignment uses
+    the identical guarded strategy as batters: modest grid-line corrections
+    only, with a fixed-height/stride fallback.  In particular, do not turn
+    each visible pitcher's row into a different-height crop, because compact
+    1/3 and 2/3 glyphs need a stable OCR cell.
     """
+    shifted = _shifted_pitcher_layout_from_blue_headers(image, layout)
+    if shifted is not None:
+        return shifted
     try:
         import numpy as np
     except ImportError:
@@ -309,22 +449,37 @@ def align_pitcher_layout(image: Any, layout: BatterScreenLayout) -> BatterScreen
             continue
         columns[name] = Region(left[1] + 1, region.y, right[0] - left[1] - 1, region.height)
 
-    stats_columns = [region for name, region in columns.items() if name != "name"]
+    stats_columns = [region for name, region in columns.items() if name not in ("name", "decision")]
     if not stats_columns:
         return BatterScreenLayout(columns, layout.first_row_y, layout.row_height, layout.row_stride,
                                   layout.max_rows, layout.row_ink_threshold, layout.row_bounds)
     x_start = max(0, min(region.x for region in stats_columns))
     x_end = min(width, max(region.x + region.width for region in stats_columns))
     horizontal_groups = _contiguous_groups(np.flatnonzero(white[:, x_start:x_end].mean(axis=1) > 0.80))
-    row_bounds = tuple(
-        (left[1] + 1, right[0] - left[1] - 1)
-        for left, right in zip(horizontal_groups, horizontal_groups[1:])
-        if layout.first_row_y - 12 <= left[1] + 1 and right[0] - left[1] - 1 > 8
-    )[:layout.max_rows]
-    if row_bounds:
+    row_starts = [end + 1 for _start, end in horizontal_groups]
+    predicted_starts = [layout.first_row_y + index * layout.row_stride for index in range(layout.max_rows)]
+    matched_starts = [
+        candidate for expected in predicted_starts
+        if (candidate := min(row_starts, key=lambda start: abs(start - expected), default=None)) is not None
+        and abs(candidate - expected) <= 12
+    ]
+    if not matched_starts:
         return BatterScreenLayout(
-            columns, row_bounds[0][0], int(round(statistics.median(height for _y, height in row_bounds))),
-            layout.row_stride, layout.max_rows, layout.row_ink_threshold, row_bounds,
+            columns, layout.first_row_y, layout.row_height, layout.row_stride,
+            layout.max_rows, layout.row_ink_threshold, (),
         )
-    return BatterScreenLayout(columns, layout.first_row_y, layout.row_height, layout.row_stride,
-                              layout.max_rows, layout.row_ink_threshold, layout.row_bounds)
+    first_row_y = matched_starts[0]
+    stride = int(round(statistics.median(
+        right - left for left, right in zip(matched_starts, matched_starts[1:])
+    ))) if len(matched_starts) > 1 else layout.row_stride
+    row_heights = []
+    for start in matched_starts:
+        next_separator = next((group_start for group_start, _group_end in horizontal_groups if group_start > start), None)
+        if next_separator is not None:
+            row_heights.append(next_separator - start)
+    candidate_row_height = int(round(statistics.median(row_heights))) if row_heights else layout.row_height
+    row_height = candidate_row_height if layout.row_height * 0.55 <= candidate_row_height <= layout.row_height * 1.50 else layout.row_height
+    return BatterScreenLayout(
+        columns, first_row_y, row_height, stride, layout.max_rows,
+        layout.row_ink_threshold, (),
+    )

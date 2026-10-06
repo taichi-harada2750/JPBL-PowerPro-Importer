@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QIntValidator
-from PySide6.QtWidgets import QComboBox, QHeaderView, QLineEdit, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QComboBox, QHeaderView, QLineEdit, QMenu, QTableWidget, QTableWidgetItem
 
 from app.models import (
     BATTER_STAT_FIELDS,
@@ -44,9 +44,18 @@ BATTER_COLUMNS: tuple[tuple[str, str | None], ...] = (
 _COMPACT_COLUMN_WIDTHS = (58, 160, 125, 90, 42, *([44] * 14), 170)
 
 _STATUS_COLOURS = {
-    "OK": QColor("#1f6b45"),
-    "要確認": QColor("#725300"),
-    "エラー": QColor("#7b2635"),
+    True: {
+        "OK": (QColor("#1f6b45"), QColor("#ffffff")),
+        "要確認": (QColor("#725300"), QColor("#ffffff")),
+        "エラー": (QColor("#7b2635"), QColor("#ffffff")),
+        "除外": (QColor("#4b5563"), QColor("#ffffff")),
+    },
+    False: {
+        "OK": (QColor("#dcfce7"), QColor("#166534")),
+        "要確認": (QColor("#fef3c7"), QColor("#92400e")),
+        "エラー": (QColor("#fee2e2"), QColor("#b91c1c")),
+        "除外": (QColor("#e5e7eb"), QColor("#374151")),
+    },
 }
 _NEW_PLAYER_VALUE = "__jpbl_add_new_player__"
 
@@ -58,6 +67,7 @@ class ReviewTableBase(QTableWidget):
 
     def __init__(self, headers: list[str], parent=None) -> None:
         super().__init__(0, len(headers), parent)
+        self._is_dark_theme = True
         self.setHorizontalHeaderLabels(headers)
         self.setAlternatingRowColors(True)
         # Cell selection makes the current column visible when navigating with
@@ -70,6 +80,17 @@ class ReviewTableBase(QTableWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.currentCellChanged.connect(self._on_current_cell_changed)
         self.cellDoubleClicked.connect(self._confirm_review_on_double_click)
+
+    def set_theme(self, is_dark: bool) -> None:
+        """Repaint status cells after the application theme changes."""
+        self._is_dark_theme = is_dark
+        for row in range(self.rowCount()):
+            self._refresh_status(row)
+
+    def _paint_status_item(self, item: QTableWidgetItem, status: str) -> None:
+        background, foreground = _STATUS_COLOURS[self._is_dark_theme][status]
+        item.setBackground(background)
+        item.setForeground(foreground)
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
@@ -103,6 +124,21 @@ class ReviewTableBase(QTableWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        """Offer export exclusion only from a row's status cell."""
+        index = self.indexAt(event.pos())
+        if index.column() != 0 or not 0 <= index.row() < len(self.records):
+            event.ignore()
+            return
+        row = index.row()
+        record = self.records[row]
+        menu = QMenu(self)
+        action = menu.addAction("除外を取り消す" if record.excluded_from_export else "GameJSONから除外する")
+        if menu.exec(event.globalPos()) is action:
+            record.excluded_from_export = not record.excluded_from_export
+            self._refresh_status(row)
+            self.records_changed.emit()
 
     def _confirm_review_on_double_click(self, row: int, column: int) -> None:
         """A double-click on a review state records the user's confirmation."""
@@ -175,10 +211,17 @@ class ReviewTableBase(QTableWidget):
         record = self.records[row]
         widget = self.cellWidget(row, 2)
         if isinstance(widget, QComboBox):
-            widget.setStyleSheet("" if record.status == "OK" else "QComboBox { background: #725300; color: #ffffff; }")
+            if record.status == "OK":
+                widget.setStyleSheet("")
+            elif record.status == "除外":
+                widget.setStyleSheet("QComboBox { background: #4b5563; color: #ffffff; }")
+            else:
+                widget.setStyleSheet("QComboBox { background: #725300; color: #ffffff; }")
         elif isinstance(widget, QLineEdit):
             if record.matched_name:
-                widget.setStyleSheet("QLineEdit { border: 1px solid #f59e0b; color: #ffffff; }")
+                # Keep the text inherited from the active theme.  White text was
+                # unreadable on the light-theme editor background.
+                widget.setStyleSheet("QLineEdit { border: 1px solid #f59e0b; }")
             else:
                 widget.setStyleSheet("QLineEdit { background: #7b2635; color: #ffffff; }")
 
@@ -206,7 +249,7 @@ class BatterReviewTable(ReviewTableBase):
 
     def _populate_row(self, row: int, record: RecognizedBatter) -> None:
         status = QTableWidgetItem(record.status)
-        status.setBackground(_STATUS_COLOURS[record.status])
+        self._paint_status_item(status, record.status)
         status.setToolTip(self._status_tooltip(record))
         status.setFlags(status.flags() & ~status.flags().ItemIsEditable)
         self.setItem(row, 0, status)
@@ -268,7 +311,7 @@ class BatterReviewTable(ReviewTableBase):
         if item is None:
             return
         item.setText(record.status)
-        item.setBackground(_STATUS_COLOURS[record.status])
+        self._paint_status_item(item, record.status)
         item.setToolTip(self._status_tooltip(record))
         reason_item = self.item(row, 1)
         if reason_item is not None:
@@ -293,19 +336,19 @@ class BatterReviewTable(ReviewTableBase):
 
 PITCHER_COLUMNS: tuple[tuple[str, str | None], ...] = (
     ("状態", None), ("確認理由", None), ("選手名", "matched_name"), ("OCR名", "ocr_name"),
-    ("投球回", "innings"), ("投球回分数", "inning_fraction"), ("球数", "pitches"),
+    ("登板", None), ("投球回", "innings"), ("投球回分数", "inning_fraction"), ("球数", "pitches"),
     ("打者", "batters_faced"), ("被安打", "hits_allowed"), ("奪三振", "strikeouts"),
     ("四死球", "walks_hbp"), ("失点", "runs"), ("自責点", "earned_runs"),
-    ("暴投", "wild_pitches"), ("被本塁打", "home_runs_allowed"), ("QS", None), ("HQS", None),
+    ("暴投", "wild_pitches"), ("被本塁打", "home_runs_allowed"), ("QS", "qs"), ("HQS", "hqs"),
     ("先発", "starts"), ("勝利", "wins"), ("敗戦", "losses"), ("H", "holds"), ("S", "saves"),
     ("完投", "complete_games"), ("完封", "shutouts"), ("無四球", "no_walk_games"), ("敬遠数", "intentional_walks"),
     ("備考", "remarks"),
 )
-_PITCHER_COMPACT_COLUMN_WIDTHS = (58, 150, 110, 75, *([48] * 22), 160)
+_PITCHER_COMPACT_COLUMN_WIDTHS = (58, 150, 110, 75, *([48] * 23), 160)
 
 
 class PitcherReviewTable(ReviewTableBase):
-    """Pitcher counterpart to ``BatterReviewTable`` with derived QS/HQS."""
+    """Pitcher counterpart to ``BatterReviewTable`` with editable automatic flags."""
 
     records_changed = Signal()
 
@@ -327,7 +370,7 @@ class PitcherReviewTable(ReviewTableBase):
 
     def _populate_row(self, row: int, record: RecognizedPitcher) -> None:
         status = QTableWidgetItem(record.status)
-        status.setBackground(_STATUS_COLOURS[record.status])
+        self._paint_status_item(status, record.status)
         status.setToolTip(record.review_reason_text)
         status.setFlags(status.flags() & ~status.flags().ItemIsEditable)
         self.setItem(row, 0, status)
@@ -343,6 +386,11 @@ class PitcherReviewTable(ReviewTableBase):
         second = "" if record.second_name is None else f"\n2位: {record.second_name} ({record.second_score:.1f})"
         ocr_item.setToolTip(f"1位: {record.matched_name or 'なし'} ({record.match_score:.1f}){second}")
         self.setItem(row, 3, ocr_item)
+
+        appearances_item = QTableWidgetItem("1")
+        appearances_item.setFlags(appearances_item.flags() & ~appearances_item.flags().ItemIsEditable)
+        appearances_item.setToolTip("GameJSON v1の固定値: 登板 = 1")
+        self.setItem(row, 4, appearances_item)
 
         for field_name in PITCHER_OCR_FIELDS:
             column = self._column_for(field_name)
@@ -392,7 +440,6 @@ class PitcherReviewTable(ReviewTableBase):
         self.setCellWidget(row, len(PITCHER_COLUMNS) - 1, remarks_editor)
 
         self._refresh_automatic_pitcher_flags(row)
-        self._refresh_derived(row)
         self._refresh_status(row)
 
     def _set_remarks(self, row: int, text: str) -> None:
@@ -406,7 +453,7 @@ class PitcherReviewTable(ReviewTableBase):
         value = editor.currentData()
         self.records[row].set_stat(field_name, value)
         self._paint_optional_editor(editor, value)
-        self._refresh_derived(row)
+        self._refresh_automatic_pitcher_flags(row)
         self._refresh_status(row)
         self.records_changed.emit()
 
@@ -415,7 +462,6 @@ class PitcherReviewTable(ReviewTableBase):
         if isinstance(editor, QComboBox):
             self.records[row].set_stat(field_name, int(editor.currentData()))
             self._refresh_automatic_pitcher_flags(row)
-            self._refresh_derived(row)
             self._refresh_status(row)
             self.records_changed.emit()
 
@@ -429,7 +475,6 @@ class PitcherReviewTable(ReviewTableBase):
         self.records[row].set_stat(field_name, value)
         self._paint_optional_editor(editor, value)
         self._refresh_automatic_pitcher_flags(row)
-        self._refresh_derived(row)
         self._refresh_status(row)
         self.records_changed.emit()
 
@@ -437,7 +482,7 @@ class PitcherReviewTable(ReviewTableBase):
         """Refresh unmodified automatic flags after an OCR-stat correction."""
         record = self.records[row]
         record.refresh_automatic_fields(only_pitcher=len(self.records) == 1)
-        automatic_fields = ("starts", "complete_games", "shutouts", "no_walk_games")
+        automatic_fields = ("qs", "hqs", "starts", "complete_games", "shutouts", "no_walk_games")
         for field_name in automatic_fields:
             editor = self.cellWidget(row, self._column_for(field_name))
             if not isinstance(editor, QComboBox):
@@ -452,22 +497,12 @@ class PitcherReviewTable(ReviewTableBase):
     def _column_for(self, field_name: str) -> int:
         return next(index for index, (_title, name) in enumerate(PITCHER_COLUMNS) if name == field_name)
 
-    def _refresh_derived(self, row: int) -> None:
-        qs, hqs = self.records[row].qs_hqs
-        for title, value in (("QS", qs), ("HQS", hqs)):
-            column = next(index for index, (header, _field) in enumerate(PITCHER_COLUMNS) if header == title)
-            item = self.item(row, column) or QTableWidgetItem()
-            item.setText(str(value))
-            item.setFlags(item.flags() & ~item.flags().ItemIsEditable)
-            item.setToolTip("投球回・投球回分数・自責点から自動計算")
-            self.setItem(row, column, item)
-
     def _refresh_status(self, row: int) -> None:
         record = self.records[row]
         status = self.item(row, 0)
         if status is not None:
             status.setText(record.status)
-            status.setBackground(_STATUS_COLOURS[record.status])
+            self._paint_status_item(status, record.status)
             status.setToolTip(record.review_reason_text)
         reason = self.item(row, 1)
         if reason is not None:

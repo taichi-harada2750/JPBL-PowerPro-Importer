@@ -90,6 +90,20 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual(calculate_qs_hqs(7, 0, 2), (1, 1))
         self.assertEqual(calculate_qs_hqs(6, 2, 2), (1, 0))
 
+    def test_exports_manually_reviewed_qs_and_hqs(self) -> None:
+        game = InternalGame(
+            game_id="game-reviewed-qs", game_date="8/21", away_team="湘南", home_team="北海道",
+            players=[PlayerRecord(
+                team="湘南", position="投手", recognition=RecognitionInfo(matched_name="鈴鹿雄大"),
+                stats=PitcherStats(innings=7, earned_runs=2, qs=0, hqs=0),
+            )],
+        )
+
+        adds = GameJsonExporter().export(game, sample_name_list())["players"][0]["adds"]
+
+        self.assertEqual(adds["QS"], 0)
+        self.assertEqual(adds["HQS"], 0)
+
     def test_rejects_invalid_inning_fraction(self) -> None:
         game = InternalGame(
             game_id="game-2", game_date="8/21", away_team="湘南", home_team="北海道",

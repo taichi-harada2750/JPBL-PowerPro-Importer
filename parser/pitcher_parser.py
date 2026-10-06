@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Mapping
 
 from app.models import PITCHER_OCR_FIELDS, RecognizedPitcher
@@ -13,8 +14,15 @@ from parser.screen_regions import BatterScreenLayout, align_pitcher_layout, load
 
 
 def parse_innings_text(raw: str) -> tuple[int, int] | None:
-    """Parse PowerPro's whole/third-inning display without guessing failures."""
-    value = raw.strip().replace(" ", "")
+    """Return ``(whole_innings, fraction_numerator)`` for a PowerPro cell.
+
+    The denominator must be 3 to validate a fractional display, but is never
+    stored: ``5⅓`` becomes ``(5, 1)`` and ``1⅔`` becomes ``(1, 2)``.
+    """
+    # OCR can return full-width digits/slashes or PowerPro's compact Unicode
+    # fraction glyph.  Canonicalize both forms before applying one strict
+    # parser, so 5⅓, 5 1/3, ５⅓ and 51／3 have the same meaning.
+    value = unicodedata.normalize("NFKC", raw).replace("⁄", "/").strip().replace(" ", "")
     if re.fullmatch(r"\d+", value):
         return int(value), 0
     thirds = {"⅓": 1, "⅔": 2}
@@ -46,6 +54,8 @@ def recognize_innings(image: Any, ocr_engine: OcrEngine) -> tuple[int, int] | No
     denominator_digits = re.findall(r"\d", denominator_text)
     if not numerator_digits or not denominator_digits or denominator_digits[-1] != "3":
         return None
+    # Keep only the validated numerator for ``inning_fraction``; the model and
+    # GameJSON calculate outs as ``innings * 3 + inning_fraction``.
     return int(whole_text), int(numerator_digits[-1])
 
 

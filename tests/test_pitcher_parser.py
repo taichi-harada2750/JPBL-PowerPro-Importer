@@ -34,13 +34,35 @@ class FractionGlyphOcrEngine(OcrEngine):
         return ""
 
 
+class WholeInningsOcrEngine(OcrEngine):
+    def __init__(self) -> None:
+        self.number_calls = 0
+
+    def recognize_text(self, image) -> str:  # type: ignore[no-untyped-def]
+        return ""
+
+    def recognize_number(self, image) -> str:  # type: ignore[no-untyped-def]
+        self.number_calls += 1
+        return "1"
+
+
 class PitcherParserTests(unittest.TestCase):
+    def test_excluded_pitcher_has_a_distinct_non_blocking_status(self) -> None:
+        pitcher = RecognizedPitcher(excluded_from_export=True)
+
+        self.assertEqual(pitcher.status, "除外")
+        self.assertEqual(pitcher.review_reason_text, "GameJSON出力から手動で除外")
+        self.assertTrue(pitcher.to_serializable_dict()["excludedFromExport"])
+
     def test_parses_whole_and_fractional_innings_without_guessing(self) -> None:
         self.assertEqual(parse_innings_text("5"), (5, 0))
         self.assertEqual(parse_innings_text("8 2/3"), (8, 2))
         self.assertEqual(parse_innings_text("0 1/3"), (0, 1))
         self.assertEqual(parse_innings_text("82/3"), (8, 2))
         self.assertEqual(parse_innings_text("8⅔"), (8, 2))
+        self.assertEqual(parse_innings_text("５⅓"), (5, 1))
+        self.assertEqual(parse_innings_text("１⅔"), (1, 2))
+        self.assertEqual(parse_innings_text("０ ２／３"), (0, 2))
         self.assertIsNone(parse_innings_text("8.5"))
 
     def test_recognizes_compact_powerpro_fraction_glyph_after_percent_misread(self) -> None:
@@ -49,6 +71,13 @@ class PitcherParserTests(unittest.TestCase):
         cell = np.zeros((56, 140, 3), dtype=np.uint8)
         cell[0, 58, 0] = 1  # First pixel of the numerator subcrop.
         self.assertEqual(recognize_innings(cell, FractionGlyphOcrEngine()), (6, 2))
+
+    def test_recognizes_whole_innings_without_fraction_subcrops(self) -> None:
+        import numpy as np
+
+        engine = WholeInningsOcrEngine()
+        self.assertEqual(recognize_innings(np.zeros((56, 140, 3), dtype=np.uint8), engine), (1, 0))
+        self.assertEqual(engine.number_calls, 1)
 
     def test_maps_name_side_decision_markers_to_manual_flags(self) -> None:
         self.assertEqual(parse_pitcher_decision("勝"), {"wins": 1, "losses": 0, "holds": 0, "saves": 0})
@@ -116,10 +145,12 @@ class PitcherParserTests(unittest.TestCase):
         values["innings"] = 9
         pitcher = RecognizedPitcher(**values)
         pitcher.refresh_automatic_fields(only_pitcher=True)
-        self.assertEqual(pitcher.complete_games, 1)
+        self.assertEqual((pitcher.qs, pitcher.hqs, pitcher.complete_games), (1, 1, 1))
+        pitcher.set_stat("qs", 0)
+        pitcher.set_stat("hqs", 0)
         pitcher.set_stat("complete_games", 0)
         pitcher.refresh_automatic_fields(only_pitcher=True)
-        self.assertEqual(pitcher.complete_games, 0)
+        self.assertEqual((pitcher.qs, pitcher.hqs, pitcher.complete_games), (0, 0, 0))
 
     def test_unrecognized_pitcher_value_and_name_remain_review_errors(self) -> None:
         pitcher = RecognizedPitcher(innings=None, inning_fraction=None)

@@ -11,6 +11,8 @@ from typing import Any
 
 from ocr.engine import OcrEngine, OcrEngineUnavailableError
 from ocr.preprocess import preprocess_name_cell, preprocess_number_cell
+from app.logging_setup import log_directory
+from app.resources import resource_path
 
 
 class PaddleOcrEngine(OcrEngine):
@@ -31,7 +33,7 @@ class PaddleOcrEngine(OcrEngine):
             # PaddleX defaults to ~/.paddlex, which is unsuitable for a
             # portable Windows application and can be permission-restricted.
             # Keep its downloaded model/cache inside this project instead.
-            cache_dir = Path(__file__).resolve().parents[2] / "runtime" / "paddlex"
+            cache_dir = resource_path("runtime/paddlex")
             os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(cache_dir))
             from paddleocr import TextRecognition
         except ImportError as error:
@@ -83,8 +85,7 @@ class PaddleOcrEngine(OcrEngine):
         """
         log_path: Path | None = None
         try:
-            app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-            log_dir = app_data / "JPBL PowerPro Importer" / "logs"
+            log_dir = log_directory()
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / "paddleocr-initialization.log"
             with log_path.open("a", encoding="utf-8") as log_file:
